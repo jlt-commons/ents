@@ -1,0 +1,42 @@
+{:paths ["src"]
+
+ ;; ents is a jolt wrapper for flecs (the C11 ECS), with an API inspired by
+ ;; vybe (world-as-map feel: entities, components, pairs, queries, systems).
+ ;;
+ ;; flecs is plain C, so scalar calls could go over jolt.ffi directly — but its
+ ;; descriptor structs embed 32-term arrays and function pointers, which are
+ ;; painful from jolt.ffi. Instead a tiny C shim (native/flecs_shim.c) exposes
+ ;; a flat fj_* API, and distr/flecs.c (the amalgamated build from a flecs
+ ;; checkout) is compiled into one dylib. FLECS_HOME names the checkout
+ ;; (default ~/src/flecs).
+ :deps {}
+
+ :jolt/native [{:name "ents"
+                :darwin ["native/libflecs_ents.dylib"]
+                :linux  ["native/libflecs_ents.so"]}]
+
+ :aliases {:test {:extra-paths ["test"]
+                  :main-opts   ["-m" "ents.test-runner"]}}
+
+ :tasks {:requires ([babashka.fs :as fs])
+         :init (def lib (str "native/libflecs_ents."
+                             (if (re-find #"^Mac" (System/getProperty "os.name")) "dylib" "so")))
+
+         native {:doc "build the flecs shim dylib if its sources changed"
+                 :task (let [flecs (or (System/getenv "FLECS_HOME")
+                                       (str (System/getProperty "user.home") "/src/flecs"))
+                            amalg (str flecs "/distr/flecs.c")]
+                         (if (or (not (fs/exists? lib))
+                                 (seq (fs/modified-since lib ["native/flecs_shim.c" "native/flecs_shim.h" amalg "deps.edn"])))
+                           ;; soft asserts: a misuse the wrapper misses logs and
+                           ;; returns an error instead of aborting the process
+                           (do (shell "clang" "-O2" "-shared" "-fPIC" "-DFLECS_SOFT_ASSERT"
+                                      (str "-I" flecs "/distr")
+                                      (str "-I" flecs "/include")
+                                      "-Inative"
+                                      "native/flecs_shim.c" amalg
+                                      "-o" lib)
+                               (println "built:" lib))
+                           (println "up to date:" lib)))}
+
+         test {:doc "unit tests (headless)" :depends [native] :task (shell "jolt -M:test")}}}
