@@ -168,6 +168,35 @@
     (ec/set-c! w :m Health {:hp 1})
     (is (= {:hp 1} (ec/get-c w :m Health)))))
 
+(deftest callback-errors-stay-in-their-world
+  ;; two worlds driven at once: one whose system always throws must not leak
+  ;; its pending error into the other's progress, or make it skip rows
+  (let [n 2000
+        bad (ec/make-world)
+        good (ec/make-world)
+        ran (atom 0)]
+    (try
+      (ec/entity! bad :a Position {:x 1 :y 1})
+      (ec/entity! good :a Position {:x 1 :y 1})
+      (ec/system! bad :s [p Position] (throw (ex-info "bad world" {})))
+      (ec/system! good :s [p Position] (swap! ran inc))
+      (let [drive (fn [w] (future
+                            (loop [i 0 errs []]
+                              (if (< i n)
+                                (recur (inc i)
+                                       (try (ec/progress w 0.016) errs
+                                            (catch Exception e (conj errs (ex-message e)))))
+                                errs))))
+            fb (drive bad)
+            fg (drive good)]
+        (is (= n (count @fb)))
+        (is (every? #{"bad world"} @fb))
+        (is (= [] @fg))
+        (is (= n @ran)))
+      (finally
+        (ec/destroy! bad)
+        (ec/destroy! good)))))
+
 (deftest redefine-system
   (ec/with-world w
     (ec/entity! w :a Position {:x 1 :y 1} Velocity {:x 5 :y 5})

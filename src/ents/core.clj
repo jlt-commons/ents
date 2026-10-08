@@ -129,21 +129,23 @@
 
 ;; An exception thrown by a system/observer body must not unwind through
 ;; flecs' C frames: that leaves the world mid-frame and read-only, and the next
-;; progress aborts. Callbacks catch it here instead, skip any further rows
-;; while it is pending, and the op that drove flecs rethrows it on return.
-(def ^:private *cb-error (atom nil))
+;; progress aborts. Callbacks catch it here instead, skip any further rows of
+;; that world while it is pending, and the op that drove flecs rethrows it on
+;; return. Errors are held per world, so worlds driven from different threads
+;; don't see each other's.
+(def ^:private *cb-errors (atom {}))
 
-(defn- rethrow-cb-error! []
-  (when-let [t @*cb-error]
-    (reset! *cb-error nil)
+(defn- rethrow-cb-error! [w]
+  (when-let [t (get @*cb-errors w)]
+    (swap! *cb-errors dissoc w)
     (throw t)))
 
 (defmacro ^:private guarded
-  "Run body (a call into flecs that may fire callbacks), then rethrow any
-  exception a callback caught."
-  [& body]
+  "Run body (a call into world w that may fire callbacks), then rethrow any
+  exception one of w's callbacks caught."
+  [w & body]
   `(let [r# (do ~@body)]
-     (rethrow-cb-error!)
+     (rethrow-cb-error! ~w)
      r#))
 
 ;; foreign-callables per world: {world-pointer {system/observer-id address}}.
@@ -170,7 +172,7 @@
   "Release the world, then the callbacks its systems and observers used."
   [w]
   (try
-    (guarded (f/fini w))
+    (guarded w (f/fini w))
     (finally
       (clear-comp-cache! w)
       (free-callables! w))))
@@ -185,7 +187,7 @@
 (defn progress
   "Advance the world's pipeline `dt` seconds, running registered systems."
   ([w] (progress w 0.0))
-  ([w dt] (guarded (f/progress w (double dt)))))
+  ([w dt] (guarded w (f/progress w (double dt)))))
 
 ;; --- entity/component ops ---------------------------------------------------------
 
@@ -206,10 +208,10 @@
   fire with the final values. Fields not in `m` keep their current value."
   [w e ^Component c m]
   (let [id (comp-id w c)
-        p (guarded (f/ensure-ptr w e id (:size c)))
+        p (guarded w (f/ensure-ptr w e id (:size c)))
         types (into {} (:fields c))]
     (doseq [[k v] m] (ffi/write-field p (:layout c) k (coerce v (get types k))))
-    (guarded (f/modified! w e id))
+    (guarded w (f/modified! w e id))
     e))
 
 (defn- apply-entity-args!
@@ -221,7 +223,7 @@
         (do (write-component! w id arg (first more))
             (recur (next more)))
 
-        :else (do (guarded (f/add-id! w id (eid w arg))) (recur more)))))
+        :else (do (guarded w (f/add-id! w id (eid w arg))) (recur more)))))
   id)
 
 (defn entity!
@@ -254,14 +256,14 @@
 (defn add!
   "Add an id: tag keyword, Component, or pair vector [Rel Tgt]. Tags are
   created on first use."
-  [w e x] (let [id (live w e)] (guarded (f/add-id! w id (eid w x)))))
+  [w e x] (let [id (live w e)] (guarded w (f/add-id! w id (eid w x)))))
 
 (defn remove!
   "Remove an id: tag keyword, Component, or pair vector."
   [w e x]
   (let [id (live w e)]
     (when-let [x-id (known-id w x)]
-      (guarded (f/remove-id! w id x-id)))))
+      (guarded w (f/remove-id! w id x-id)))))
 
 (defn has?
   "True when the entity has the id."
@@ -269,7 +271,7 @@
   (let [id (live w e)]
     (boolean (some->> (known-id w x) (f/has-id? w id)))))
 
-(defn delete! [w e] (let [id (live w e)] (guarded (f/delete! w id))))
+(defn delete! [w e] (let [id (live w e)] (guarded w (f/delete! w id))))
 
 (defn alive? [w e] (some? (known-id w e)))
 (defn valid? [w e]
@@ -437,14 +439,14 @@
     (throw (ex-info "unknown phase" {:phase phase}))))
 
 (defn- row-callback
-  "A C-callable iterator callback running (f args) per row. Exceptions are
-  held for the driving op to rethrow (see *cb-error)."
-  [specs f]
+  "A C-callable iterator callback running (f args) per row of world w.
+  Exceptions are held for the driving op to rethrow (see *cb-errors)."
+  [w specs f]
   (ffi/foreign-callable
    (fn [it]
-     (when-not @*cb-error
+     (when-not (contains? @*cb-errors w)
        (try (each-row it specs f)
-            (catch Throwable t (reset! *cb-error t)))))
+            (catch Throwable t (swap! *cb-errors assoc w t)))))
    [:pointer] :void))
 
 (defn- register-poly!
@@ -453,7 +455,7 @@
   [w n specs f make]
   (register-specs! w specs)
   (let [old (f/lookup w n)
-        cb (row-callback specs f)
+        cb (row-callback w specs f)
         id (make cb)]
     (when (zero? id)
       (ffi/free-callable cb)
@@ -492,7 +494,7 @@
 (defn run-system!
   "Run one system immediately with `dt` (default 0), outside progress."
   ([w sys] (run-system! w sys 0))
-  ([w sys dt] (let [id (live w sys)] (guarded (f/run! w id (double dt))))))
+  ([w sys dt] (let [id (live w sys)] (guarded w (f/run! w id (double dt))))))
 
 ;; --- observers --------------------------------------------------------------------
 
