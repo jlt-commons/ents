@@ -1,0 +1,34 @@
+name: tests
+on: [push, pull_request]
+env:
+  # the flecs commit ents is developed and tested against
+  FLECS_REF: 9e874bca2c05b60612cf5b671988adefc0785820
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: SanderMertens/flecs
+          ref: ${{ env.FLECS_REF }}
+          path: flecs
+      - name: Install jolt runtime deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liblz4-1 zlib1g libtinfo6 clang
+      - name: Install jolt
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+            | bash -s -- --dir "$HOME/.jolt"
+          echo "$HOME/.jolt" >> "$GITHUB_PATH"
+      - name: Build the flecs shim and test
+        env:
+          FLECS_HOME: ${{ github.workspace }}/flecs
+        run: JOLT_PWD="$PWD" jolt run test

@@ -35,6 +35,7 @@
                                       (str "-I" flecs "/include")
                                       "-Inative"
                                       "native/flecs_shim.c" amalg
+                                      "-lm" "-lpthread"
                                       "-o" lib)
                                (println "built:" lib))
                            (println "up to date:" lib)))}
