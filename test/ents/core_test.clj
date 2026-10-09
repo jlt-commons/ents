@@ -197,6 +197,21 @@
         (ec/destroy! bad)
         (ec/destroy! good)))))
 
+(deftest callback-error-cleared-when-driver-throws
+  ;; if the call into flecs throws after a callback caught an error, the
+  ;; callback's error is the one thrown and it is not left pending, which
+  ;; would make every later callback of the world skip its rows
+  (ec/with-world w
+    (ec/entity! w :a Position {:x 1 :y 1})
+    (let [n (atom 0)
+          progress f/progress]
+      (ec/system! w :s [p Position]
+        (when (= 1 (swap! n inc)) (throw (ex-info "boom" {}))))
+      (with-redefs [f/progress (fn [w dt] (progress w dt) (throw (ex-info "native" {})))]
+        (is (thrown-with-msg? Exception #"boom" (ec/progress w 0.1))))
+      (ec/progress w 0.1)
+      (is (= 2 @n)))))
+
 (deftest redefine-system
   (ec/with-world w
     (ec/entity! w :a Position {:x 1 :y 1} Velocity {:x 5 :y 5})

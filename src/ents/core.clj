@@ -135,17 +135,20 @@
 ;; don't see each other's.
 (def ^:private *cb-errors (atom {}))
 
-(defn- rethrow-cb-error! [w]
-  (when-let [t (get @*cb-errors w)]
-    (swap! *cb-errors dissoc w)
-    (throw t)))
+(defn- take-cb-error!
+  "Remove and return w's pending callback error, if any."
+  [w]
+  (get (first (swap-vals! *cb-errors dissoc w)) w))
 
 (defmacro ^:private guarded
   "Run body (a call into world w that may fire callbacks), then rethrow any
-  exception one of w's callbacks caught."
+  exception one of w's callbacks caught. The pending error is cleared even if
+  body throws, and wins over body's exception, which it likely caused."
   [w & body]
-  `(let [r# (do ~@body)]
-     (rethrow-cb-error! ~w)
+  `(let [r# (try (do ~@body)
+                 (catch Throwable t#
+                   (throw (or (take-cb-error! ~w) t#))))]
+     (when-let [t# (take-cb-error! ~w)] (throw t#))
      r#))
 
 ;; foreign-callables per world: {world-pointer {system/observer-id address}}.
