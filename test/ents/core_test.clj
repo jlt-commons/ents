@@ -67,7 +67,10 @@
     (let [xs (ec/with-query w [p Position e :ent]
                [e (:x p)])]
       (is (= 2 (count xs)))
-      (is (= #{1.0 2.0} (set (map second xs)))))))
+      ;; :float fields read back as java.lang.Float, the jolt.ffi convention;
+      ;; Float and Double hash differently, so a set compares them unequal
+      (is (every? #(instance? Float (second %)) xs))
+      (is (= #{1.0 2.0} (set (map (comp double second) xs)))))))
 
 (deftest system-progress
   (ec/with-world w

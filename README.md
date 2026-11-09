@@ -48,13 +48,30 @@ the empty name, a leading `#` (flecs id syntax), and `* _ $ this` (query
 wildcards and variables). Ops on a missing or dead entity throw
 `ex-info`, and an id that was never created reads as absent (`has?` is false,
 `remove!` is a no-op). New components start zeroed, so a partial `set-c!` on
-a fresh component leaves the other fields at 0.
+a fresh component leaves the other fields at 0. `:float` fields read back as
+`java.lang.Float`, as jolt.ffi returns them: `=` against a double works, but a
+Float and a Double hash differently, so widen with `double` before putting
+them in sets or using them as map keys.
 
 An exception thrown in a system or observer body is caught before it can
 unwind through flecs and rethrown from the call that drove it (`progress`,
 `set-c!`, `entity!`, ...); the world stays usable. Redefining a system or
 observer by name replaces it, and callbacks are released on replacement and on
 `destroy!`.
+
+## Install
+
+Add ents as a git dep:
+
+```clojure
+{:deps {io.github.jlt-commons/ents {:git/url "https://github.com/jlt-commons/ents"
+                                    :git/sha "..."}}}
+```
+
+The first run builds the native library in the dependency's checkout (needs
+jolt 0.8.26+ for `:build` in `:jolt/native`, a C compiler, and git to fetch
+flecs). With an older jolt, run `jolt native` in a clone and depend on it with
+`:local/root`.
 
 ## Build
 
@@ -63,7 +80,9 @@ flat `fj_*` shim (`native/flecs_shim.c`) that spares jolt.ffi the descriptor
 structs (32-term arrays, callbacks) and emits OnSet notifications properly.
 It is built with `FLECS_SOFT_ASSERT`, so a misuse the wrapper doesn't catch
 logs an error instead of aborting the process.
-Point `FLECS_HOME` at a flecs checkout (default `~/src/flecs`), then:
+`jolt native` fetches the pinned flecs commit into `vendor/flecs`, or uses the
+checkout `FLECS_HOME` points at, then builds the library (skipped when it is
+up to date):
 
-    jolt run native
-    jolt run test
+    jolt native
+    jolt test
