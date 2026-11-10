@@ -7,30 +7,53 @@
  ;; descriptor structs embed 32-term arrays and function pointers, which are
  ;; painful from jolt.ffi. Instead a tiny C shim (native/flecs_shim.c) exposes
  ;; a flat fj_* API, and distr/flecs.c (the amalgamated build from a flecs
- ;; checkout) is compiled into one dylib. FLECS_HOME names the checkout
- ;; (default ~/src/flecs).
+ ;; checkout) is compiled into one dylib. FLECS_HOME names a flecs checkout;
+ ;; without it the pinned commit is fetched into vendor/flecs.
  :deps {}
 
+ ;; :build names the task that produces the library, so a consumer pulling ents
+ ;; as a git dep gets it built in the checkout on first use.
  :jolt/native [{:name "ents"
                 :darwin ["native/libflecs_ents.dylib"]
-                :linux  ["native/libflecs_ents.so"]}]
+                :linux  ["native/libflecs_ents.so"]
+                :build "native"}]
 
  :aliases {:test {:extra-paths ["test"]
                   :main-opts   ["-m" "ents.test-runner"]}}
 
  :tasks {:requires ([babashka.fs :as fs])
-         :init (def lib (str "native/libflecs_ents."
-                             (if (re-find #"^Mac" (System/getProperty "os.name")) "dylib" "so")))
+         :init (do (def lib (str "native/libflecs_ents."
+                                 (if (re-find #"^Mac" (System/getProperty "os.name")) "dylib" "so")))
+                   ;; the flecs commit ents is developed and tested against
+                   (def flecs-ref "9e874bca2c05b60612cf5b671988adefc0785820"))
 
-         native {:doc "build the flecs shim dylib if its sources changed"
-                 :task (let [flecs (or (System/getenv "FLECS_HOME")
-                                       (str (System/getProperty "user.home") "/src/flecs"))
-                            amalg (str flecs "/distr/flecs.c")]
+         flecs {:doc "fetch the pinned flecs commit into vendor/flecs (skipped when FLECS_HOME is set or it is already there)"
+                :task (let [home (System/getenv "FLECS_HOME")]
+                        (cond
+                          home
+                          (when-not (fs/exists? (str home "/distr/flecs.c"))
+                            (throw (ex-info (str "FLECS_HOME=" home " has no distr/flecs.c; point it at a flecs checkout") {})))
+
+                          (fs/exists? "vendor/flecs/distr/flecs.c")
+                          (println "flecs: up to date")
+
+                          :else
+                          (do (fs/create-dirs "vendor/flecs")
+                              (shell {:dir "vendor/flecs"} "git" "init" "-q")
+                              (shell {:dir "vendor/flecs"} "git" "fetch" "-q" "--depth" "1"
+                                     "https://github.com/SanderMertens/flecs.git" flecs-ref)
+                              (shell {:dir "vendor/flecs"} "git" "checkout" "-q" "FETCH_HEAD"))))}
+
+         native {:doc "build the flecs shim library if its sources changed"
+                 :depends [flecs]
+                 :task (let [flecs (or (System/getenv "FLECS_HOME") "vendor/flecs")
+                             amalg (str flecs "/distr/flecs.c")]
                          (if (or (not (fs/exists? lib))
-                                 (seq (fs/modified-since lib ["native/flecs_shim.c" "native/flecs_shim.h" amalg "deps.edn"])))
+                                 (seq (fs/modified-since lib ["native/flecs_shim.c" "native/flecs_shim.h" amalg])))
                            ;; soft asserts: a misuse the wrapper misses logs and
                            ;; returns an error instead of aborting the process
-                           (do (shell "clang" "-O2" "-shared" "-fPIC" "-DFLECS_SOFT_ASSERT"
+                           (do (shell (or (System/getenv "CC") "cc")
+                                      "-O2" "-shared" "-fPIC" "-DFLECS_SOFT_ASSERT"
                                       (str "-I" flecs "/distr")
                                       (str "-I" flecs "/include")
                                       "-Inative"

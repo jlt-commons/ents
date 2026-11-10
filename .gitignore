@@ -5,10 +5,13 @@
 .nrepl-port
 .DS_Store
 
-# native build output; `jolt run native` regenerates it
+# native build output; `jolt native` regenerates it
 native/build/
 native/libflecs_ents.dylib
 native/libflecs_ents.so
 
 # jolt build cache
 .jolt/
+
+# flecs fetched by `jolt native` when FLECS_HOME is unset
+vendor/
